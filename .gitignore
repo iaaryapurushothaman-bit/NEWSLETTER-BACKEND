@@ -1,0 +1,7 @@
+# Node modules
+node_modules/
+dist/
+*.log
+.env
+latest_newsletter.json
+sent_emails/
