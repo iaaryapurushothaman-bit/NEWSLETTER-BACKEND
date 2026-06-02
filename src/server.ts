@@ -204,7 +204,7 @@ app.post('/api/send-email', async (req: Request, res: Response) => {
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>NewsForge AI - Newsletter Briefing</title>
+  <title>NewsPulse.AI - Newsletter Briefing</title>
   <style>
     body { font-family: 'Inter', Arial, sans-serif; background: #f1f5f9; padding: 32px; }
     .meta { max-width: 600px; margin: 0 auto 16px auto; background: #1e293b; color: #94a3b8; font-size: 12px; padding: 12px 20px; border-radius: 8px; }
@@ -213,7 +213,7 @@ app.post('/api/send-email', async (req: Request, res: Response) => {
 </head>
 <body>
   <div class="meta">
-    <b>NewsForge AI Mock Email</b><br>
+    <b>NewsPulse.AI Mock Email</b><br>
     <b>To:</b> ${recipientEmail}<br>
     <b>Subject:</b> ${subject || 'Your Curated Industry Briefing'}<br>
     <b>Sent at:</b> ${new Date().toLocaleString()}
@@ -258,9 +258,9 @@ app.post('/api/send-email', async (req: Request, res: Response) => {
     );
 
     await transporter.sendMail({
-      from: `"NewsForge AI" <${smtpUser}>`,
+      from: `"NewsPulse.AI" <${smtpUser}>`,
       to: recipientEmail,
-      subject: subject || 'Your Curated Industry Briefing — NewsForge AI',
+      subject: subject || 'Your Curated Industry Briefing — NewsPulse.AI',
       text: "Please find your curated industry briefing attached as an HTML file. You can download and open it in any web browser to view the fully styled newsletter.",
       attachments: [
         {
