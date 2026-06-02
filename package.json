@@ -1,0 +1,28 @@
+{
+  "name": "newsletter-backend",
+  "version": "1.0.0",
+  "description": "Backend for AI-powered newsletter generator using Vertex AI and SerpAPI",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@google-cloud/vertexai": "^1.1.0",
+    "@google/genai": "^2.6.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "google-auth-library": "^10.6.2",
+    "nodemailer": "^8.0.9"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.12.12",
+    "@types/nodemailer": "^8.0.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.4.5"
+  }
+}
