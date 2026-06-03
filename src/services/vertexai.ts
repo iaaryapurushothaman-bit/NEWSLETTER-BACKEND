@@ -1,6 +1,7 @@
 import { VertexAI } from '@google-cloud/vertexai';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import dotenv from 'dotenv';
 import { RawNewsArticle } from './serpapi';
 
@@ -23,34 +24,51 @@ let vertexAIInstance: VertexAI | null = null;
 function getVertexAI(): VertexAI {
   if (vertexAIInstance) return vertexAIInstance;
 
-  const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   const configuredProjectId = process.env.GCP_PROJECT_ID || 'tenxds-agents-idp';
   const location = process.env.GCP_LOCATION || 'us-central1';
-
   let resolvedProjectId = configuredProjectId;
 
-  if (credentialsPath) {
-    const cleanPath = credentialsPath.replace(/^["']|["']$/g, ''); // strip outer quotes
-    if (fs.existsSync(cleanPath)) {
-      try {
-        const creds = JSON.parse(fs.readFileSync(cleanPath, 'utf8'));
-        if (creds.project_id) {
-          resolvedProjectId = creds.project_id;
-          console.log(`[Vertex AI] Found project ID in credentials file: "${resolvedProjectId}"`);
-        }
-        // Force the environment variable to contain the clean path for the GCP SDK
-        process.env.GOOGLE_APPLICATION_CREDENTIALS = cleanPath;
-      } catch (err) {
-        console.error("[Vertex AI] Failed to read project ID from credentials file, falling back to env:", err);
+  // ── Option A: Credentials provided as a raw JSON string (Render / cloud env) ──
+  const credentialsJson = process.env.GOOGLE_CREDENTIALS_JSON;
+  if (credentialsJson) {
+    try {
+      const creds = JSON.parse(credentialsJson);
+      if (creds.project_id) {
+        resolvedProjectId = creds.project_id;
+        console.log(`[Vertex AI] Using project ID from GOOGLE_CREDENTIALS_JSON: "${resolvedProjectId}"`);
       }
-    } else {
-      console.warn(`[Vertex AI] Credentials file not found at: ${cleanPath}. Running in default authentication mode.`);
+      // Write to a temp file so the GCP SDK can pick it up via GOOGLE_APPLICATION_CREDENTIALS
+      const tmpPath = path.join(os.tmpdir(), 'gcp-credentials.json');
+      fs.writeFileSync(tmpPath, credentialsJson, 'utf8');
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = tmpPath;
+      console.log(`[Vertex AI] Wrote credentials to temp file: ${tmpPath}`);
+    } catch (err) {
+      console.error('[Vertex AI] Failed to parse GOOGLE_CREDENTIALS_JSON:', err);
+    }
+  } else {
+    // ── Option B: Credentials provided as a file path (local dev) ──
+    const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    if (credentialsPath) {
+      const cleanPath = credentialsPath.replace(/^["']|["']$/g, '');
+      if (fs.existsSync(cleanPath)) {
+        try {
+          const creds = JSON.parse(fs.readFileSync(cleanPath, 'utf8'));
+          if (creds.project_id) {
+            resolvedProjectId = creds.project_id;
+            console.log(`[Vertex AI] Found project ID in credentials file: "${resolvedProjectId}"`);
+          }
+          process.env.GOOGLE_APPLICATION_CREDENTIALS = cleanPath;
+        } catch (err) {
+          console.error('[Vertex AI] Failed to read project ID from credentials file:', err);
+        }
+      } else {
+        console.warn(`[Vertex AI] Credentials file not found at: ${cleanPath}. Running in default auth mode.`);
+      }
     }
   }
 
   console.log(`[Vertex AI] Initializing client for project: "${resolvedProjectId}", location: "${location}"`);
 
-  // Initialize the Vertex AI client
   vertexAIInstance = new VertexAI({
     project: resolvedProjectId,
     location: location,

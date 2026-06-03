@@ -1,4 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -11,6 +14,19 @@ function getGenAI(): GoogleGenAI {
   const project = process.env.GCP_PROJECT_ID || 'tenxds-agents-idp';
   const location = process.env.GCP_LOCATION || 'us-central1';
 
+  // If running on Render/cloud: write credentials JSON to a temp file
+  const credentialsJson = process.env.GOOGLE_CREDENTIALS_JSON;
+  if (credentialsJson && !process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    try {
+      const tmpPath = path.join(os.tmpdir(), 'gcp-credentials.json');
+      fs.writeFileSync(tmpPath, credentialsJson, 'utf8');
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = tmpPath;
+      console.log(`[ImageGen] Wrote credentials to temp file: ${tmpPath}`);
+    } catch (err) {
+      console.error('[ImageGen] Failed to write GOOGLE_CREDENTIALS_JSON to temp file:', err);
+    }
+  }
+
   console.log(`[ImageGen] Initializing Gemini Image Gen for project: "${project}", location: "${location}"`);
 
   genAIInstance = new GoogleGenAI({
@@ -21,6 +37,7 @@ function getGenAI(): GoogleGenAI {
 
   return genAIInstance;
 }
+
 
 /**
  * Generates a single editorial-style news image for a given headline and description.
