@@ -249,11 +249,15 @@ app.post('/api/send-email', async (req: Request, res: Response) => {
           pass: smtpPass,
         }
       } : {
-        service: 'gmail',
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
         auth: {
           user: smtpUser,
           pass: smtpPass,
         },
+        // Force Node to use IPv4 instead of IPv6 for SMTP connections
+        family: 4 
       }
     );
 
