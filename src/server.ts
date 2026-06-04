@@ -255,8 +255,9 @@ app.post('/api/send-email', async (req: Request, res: Response) => {
         }
       } : {
         host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
+        port: 587,
+        secure: false, // Use STARTTLS
+        requireTLS: true,
         auth: {
           user: smtpUser,
           pass: smtpPass,
