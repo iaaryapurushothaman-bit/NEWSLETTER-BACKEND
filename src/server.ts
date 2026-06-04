@@ -4,9 +4,14 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import nodemailer from 'nodemailer';
+import dns from 'dns';
 import { fetchNews } from './services/serpapi';
 import { generateNewsletter } from './services/vertexai';
 import { generateNewsImages, generateNewsImage } from './services/imagegeneration';
+
+// Force Node.js to use IPv4 instead of IPv6 for all DNS lookups
+// This fixes the ENETUNREACH IPv6 error on Render and other cloud hosts
+dns.setDefaultResultOrder('ipv4first');
 
 dotenv.config();
 
