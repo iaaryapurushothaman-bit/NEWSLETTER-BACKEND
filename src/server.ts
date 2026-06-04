@@ -239,7 +239,7 @@ app.post('/api/send-email', async (req: Request, res: Response) => {
   try {
     const isOutlook = smtpUser.toLowerCase().includes('outlook.com') || smtpUser.toLowerCase().includes('hotmail.com');
 
-    const transporter = nodemailer.createTransport(
+    const transporter = nodemailer.createTransport((
       isOutlook ? {
         host: 'smtp-mail.outlook.com',
         port: 587,
@@ -259,7 +259,7 @@ app.post('/api/send-email', async (req: Request, res: Response) => {
         // Force Node to use IPv4 instead of IPv6 for SMTP connections
         family: 4 
       }
-    );
+    ) as any);
 
     await transporter.sendMail({
       from: `"NewsPulse.AI" <${smtpUser}>`,
