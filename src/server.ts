@@ -3,15 +3,10 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
-import nodemailer from 'nodemailer';
-import dns from 'dns';
+import { Resend } from 'resend';
 import { fetchNews } from './services/serpapi';
 import { generateNewsletter } from './services/vertexai';
 import { generateNewsImages, generateNewsImage } from './services/imagegeneration';
-
-// Force Node.js to use IPv4 instead of IPv6 for all DNS lookups
-// This fixes the ENETUNREACH IPv6 error on Render and other cloud hosts
-dns.setDefaultResultOrder('ipv4first');
 
 dotenv.config();
 
@@ -240,52 +235,40 @@ app.post('/api/send-email', async (req: Request, res: Response) => {
     }
   }
 
-  // === LIVE MODE: Send via Gmail or Outlook SMTP ===
+  // === LIVE MODE: Send via Resend HTTP API ===
   try {
-    const isOutlook = smtpUser.toLowerCase().includes('outlook.com') || smtpUser.toLowerCase().includes('hotmail.com');
+    const resendApiKey = process.env.RESEND_API_KEY;
+    if (!resendApiKey) {
+      throw new Error("RESEND_API_KEY environment variable is not set. Please add it to your Render Environment.");
+    }
 
-    const transporter = nodemailer.createTransport((
-      isOutlook ? {
-        host: 'smtp-mail.outlook.com',
-        port: 587,
-        secure: false, // STARTTLS
-        auth: {
-          user: smtpUser,
-          pass: smtpPass,
-        }
-      } : {
-        host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
-        auth: {
-          user: smtpUser,
-          pass: smtpPass,
-        },
-        // Force Node to use IPv4 instead of IPv6 for SMTP connections
-        family: 4 
-      }
-    ) as any);
+    const resend = new Resend(resendApiKey);
 
-    await transporter.sendMail({
-      from: `"NewsPulse.AI" <${smtpUser}>`,
+    // Note: If you don't have a verified custom domain on Resend, 
+    // the 'from' address MUST be onboarding@resend.dev
+    const { data, error } = await resend.emails.send({
+      from: 'NewsPulse.AI <onboarding@resend.dev>',
       to: recipientEmail,
       subject: subject || 'Your Curated Industry Briefing — NewsPulse.AI',
       text: "Please find your curated industry briefing attached as an HTML file. You can download and open it in any web browser to view the fully styled newsletter.",
       attachments: [
         {
-          filename: 'NewsForge_Briefing.html',
-          content: htmlContent,
-          contentType: 'text/html'
+          filename: 'NewsPulse_Briefing.html',
+          content: Buffer.from(htmlContent)
         }
       ]
     });
 
-    console.log(`[API] Email sent successfully to: ${recipientEmail}`);
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    console.log(`[API] Email sent successfully to: ${recipientEmail} via Resend`);
     return res.json({ success: true, mock: false, message: `Email dispatched to ${recipientEmail}` });
   } catch (err: any) {
-    console.error('[API Error] Gmail send failed:', err);
+    console.error('[API Error] Resend email failed:', err);
     return res.status(500).json({
-      error: err.message || 'Failed to send email via Gmail. Check your SMTP credentials.'
+      error: err.message || 'Failed to send email via Resend. Check your API Key.'
     });
   }
 });
