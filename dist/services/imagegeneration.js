@@ -6,6 +6,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateNewsImage = generateNewsImage;
 exports.generateNewsImages = generateNewsImages;
 const genai_1 = require("@google/genai");
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
+const os_1 = __importDefault(require("os"));
 const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config();
 let genAIInstance = null;
@@ -14,6 +17,19 @@ function getGenAI() {
         return genAIInstance;
     const project = process.env.GCP_PROJECT_ID || 'tenxds-agents-idp';
     const location = process.env.GCP_LOCATION || 'us-central1';
+    // If running on Render/cloud: write credentials JSON to a temp file
+    const credentialsJson = process.env.GOOGLE_CREDENTIALS_JSON;
+    if (credentialsJson && !process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+        try {
+            const tmpPath = path_1.default.join(os_1.default.tmpdir(), 'gcp-credentials.json');
+            fs_1.default.writeFileSync(tmpPath, credentialsJson, 'utf8');
+            process.env.GOOGLE_APPLICATION_CREDENTIALS = tmpPath;
+            console.log(`[ImageGen] Wrote credentials to temp file: ${tmpPath}`);
+        }
+        catch (err) {
+            console.error('[ImageGen] Failed to write GOOGLE_CREDENTIALS_JSON to temp file:', err);
+        }
+    }
     console.log(`[ImageGen] Initializing Gemini Image Gen for project: "${project}", location: "${location}"`);
     genAIInstance = new genai_1.GoogleGenAI({
         vertexai: true,

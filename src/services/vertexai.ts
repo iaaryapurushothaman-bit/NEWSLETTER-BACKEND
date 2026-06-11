@@ -11,10 +11,19 @@ export interface CuratedHeadline {
   heading: string;
   description: string;
   source_link: string;
+  image_url?: string | null;
+}
+
+export interface WishSection {
+  wish_title: string;
+  wish_content: string;
+  image_url?: string | null;
 }
 
 export interface GeneratedNewsletter {
+  editorial_title?: string;
   editorial_summary: string;
+  wish?: WishSection | null;
   news_items: CuratedHeadline[];
 }
 
@@ -197,3 +206,118 @@ Respond ONLY with a valid JSON object matching this structure:
     throw error;
   }
 }
+
+export async function generateNewsletterFromFile(params: {
+  documentText: string;
+  clientName?: string;
+  newsCount?: number;
+}): Promise<GeneratedNewsletter> {
+  const { documentText, clientName, newsCount } = params;
+  const targetCount = newsCount || 5;
+
+  const clientText = clientName && clientName.trim() !== '' ? `specifically customized for ${clientName.trim()}` : '';
+
+  // Get the initialized Vertex AI instance
+  const vertexAI = getVertexAI();
+
+  // Load the model
+  const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  console.log(`[Vertex AI] Using model: "${modelName}" for file generation (strict mode)`);
+  
+  const generativeModel = vertexAI.preview.getGenerativeModel({
+    model: modelName,
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 0.1, // very low to ensure exact extraction and copying
+    }
+  });
+
+  const prompt = `
+You are a strict text extraction and formatting engine.
+Your task is to parse the raw text content of an uploaded document and extract its sections EXACTLY as written.
+Do NOT rewrite, paraphrase, summarize, correct grammar, translate, or generate any new content. You must copy the text word-for-word.
+
+Here is the raw text of the document:
+---
+${documentText}
+---
+
+INSTRUCTIONS:
+1. Identify the first major section/topic (e.g. related to 'Simplifying Workforce Operations' or general business topics). Extract its exact text:
+   - "editorial_title": The exact heading of this section (e.g. 'Simplifying Workforce Operations with a Unified Digital Platform').
+   - "editorial_summary": The exact paragraphs under this section, copied word-for-word.
+   
+2. Identify the wish/greeting section (e.g. 'Eid Mubarak' or other festival/celebration wishes). Extract its exact text:
+   - "wish": An object containing:
+     - "wish_title": The exact heading of this section (e.g. 'Eid Mubarak from 10xDS!').
+     - "wish_content": The exact paragraphs under this section, copied word-for-word.
+   - If no wish/holiday greeting section is present, set "wish" to null.
+
+3. Identify the subsequent sections which describe company solutions, products, or other bulletins (e.g. '10xMenu.AI' or other company solutions). For each of these sections:
+   - "heading": The exact heading of the solution/product (e.g. '10xMenu.AI: Turn Your Menu into a Revenue Engine').
+   - "description": The exact paragraphs under that heading, copied word-for-word.
+   - "source_link": Provide an empty string ("").
+
+Respond ONLY with a valid JSON object matching this structure:
+{
+  "editorial_title": "...",
+  "editorial_summary": "...",
+  "wish": {
+    "wish_title": "...",
+    "wish_content": "..."
+  },
+  "news_items": [
+    {
+      "heading": "...",
+      "description": "...",
+      "source_link": ""
+    }
+  ]
+}
+`;
+
+  try {
+    const result = await generativeModel.generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    });
+
+    const responseText = result.response?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!responseText) {
+      throw new Error("Empty response returned from Gemini Vertex AI model.");
+    }
+
+    const parsedContent = JSON.parse(responseText.trim()) as GeneratedNewsletter;
+    console.log("[Vertex AI] Successfully extracted newsletter content from document.");
+    return parsedContent;
+  } catch (error: any) {
+    console.error("[Vertex AI] Failed to extract newsletter from file:", error);
+
+    // Fallback: if gemini-2.5-flash is not available, retry with gemini-1.5-flash
+    if (error.message && (error.message.includes('not found') || error.message.includes('permission') || error.message.includes('404'))) {
+      const fallbackModelName = 'gemini-1.5-flash';
+      console.log(`[Vertex AI] Attempting fallback to: "${fallbackModelName}"`);
+      try {
+        const fallbackModel = vertexAI.preview.getGenerativeModel({
+          model: fallbackModelName,
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.1,
+          }
+        });
+        const result = await fallbackModel.generateContent({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        });
+        const responseText = result.response?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (responseText) {
+          const parsedContent = JSON.parse(responseText.trim()) as GeneratedNewsletter;
+          console.log("[Vertex AI] Successfully extracted newsletter content from document using fallback model.");
+          return parsedContent;
+        }
+      } catch (fallbackError) {
+        console.error("[Vertex AI] Fallback model also failed:", fallbackError);
+      }
+    }
+    throw error;
+  }
+}
+

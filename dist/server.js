@@ -8,7 +8,8 @@ const cors_1 = __importDefault(require("cors"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
-const nodemailer_1 = __importDefault(require("nodemailer"));
+const resend_1 = require("resend");
+const mammoth_1 = __importDefault(require("mammoth"));
 const serpapi_1 = require("./services/serpapi");
 const vertexai_1 = require("./services/vertexai");
 const imagegeneration_1 = require("./services/imagegeneration");
@@ -32,7 +33,8 @@ app.use((0, cors_1.default)({
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express_1.default.json());
+app.use(express_1.default.json({ limit: '50mb' }));
+app.use(express_1.default.urlencoded({ limit: '50mb', extended: true }));
 // Basic health check endpoint
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', time: new Date() });
@@ -113,6 +115,102 @@ app.post('/api/generate-newsletter', async (req, res) => {
         });
     }
 });
+// Generate newsletter based on uploaded Word document content
+app.post('/api/generate-from-file', async (req, res) => {
+    const { fileBuffer, // base64 string
+    clientName, clientLogo, newsCount } = req.body;
+    const finalClientName = clientName || '';
+    const finalNewsCount = parseInt(newsCount || '5', 10);
+    if (!fileBuffer) {
+        return res.status(400).json({ error: "No file content was provided." });
+    }
+    try {
+        console.log(`[API] Received generation-from-file request for Client: "${finalClientName}"`);
+        // Decode base64 buffer
+        const buffer = Buffer.from(fileBuffer, 'base64');
+        // Parse DOCX to text using mammoth
+        console.log(`[API] Parsing DOCX buffer...`);
+        const mammothResult = await mammoth_1.default.extractRawText({ buffer });
+        const documentText = mammothResult.value;
+        if (!documentText || documentText.trim().length === 0) {
+            return res.status(400).json({ error: "Could not extract any text from the provided document. Make sure it is a valid, non-empty Word document." });
+        }
+        console.log(`[API] Extracted text length: ${documentText.length} characters.`);
+        // Orchestrate Vertex AI to generate newsletter based on document text
+        console.log(`[API] Generating newsletter content from file text...`);
+        const newsletterContent = await (0, vertexai_1.generateNewsletterFromFile)({
+            documentText,
+            clientName: finalClientName,
+            newsCount: finalNewsCount
+        });
+        // Generate images in parallel/sequentially for each news item
+        console.log(`[API] Generating ${newsletterContent.news_items.length} news images...`);
+        const images = await (0, imagegeneration_1.generateNewsImages)(newsletterContent.news_items.map(item => ({
+            heading: item.heading,
+            description: item.description
+        })));
+        // Generate a hero image for the editorial summary
+        console.log(`[API] Generating hero image for editorial summary...`);
+        const editorialImage = await (0, imagegeneration_1.generateNewsImage)(newsletterContent.editorial_title || `Overview: ${finalClientName || 'Industry Trends'}`, newsletterContent.editorial_summary.substring(0, 500));
+        // Generate an image for the wish section if it exists
+        let wishImage = null;
+        if (newsletterContent.wish && newsletterContent.wish.wish_title) {
+            console.log(`[API] Generating image for wish section: "${newsletterContent.wish.wish_title}"...`);
+            wishImage = await (0, imagegeneration_1.generateNewsImage)(newsletterContent.wish.wish_title, newsletterContent.wish.wish_content.substring(0, 500));
+            // Wait for a short delay to respect Vertex AI quotas
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+        // Attach generated images to news items
+        const enrichedItems = newsletterContent.news_items.map((item, i) => ({
+            ...item,
+            image_url: images[i] || null
+        }));
+        const resultPayload = {
+            ...newsletterContent,
+            editorial_image_url: editorialImage,
+            wish: newsletterContent.wish ? {
+                ...newsletterContent.wish,
+                image_url: wishImage
+            } : null,
+            news_items: enrichedItems
+        };
+        // Save the generated state to disk
+        await saveNewsletterState({
+            sector: '10xDS CURVE',
+            category: '10xDS CURVE',
+            customCategory: '',
+            clientName: finalClientName,
+            clientLogo: clientLogo || null,
+            newsCount: finalNewsCount
+        }, resultPayload);
+        res.json(resultPayload);
+    }
+    catch (error) {
+        console.error("[API Error] Failed to generate newsletter from file:", error);
+        res.status(500).json({
+            error: error.message || "An error occurred during newsletter generation from the uploaded file. Please verify credentials."
+        });
+    }
+});
+// Regenerate single image using Gemini
+app.post('/api/regenerate-image', async (req, res) => {
+    const { heading, description } = req.body;
+    if (!heading) {
+        return res.status(400).json({ error: "Heading is required to generate an image." });
+    }
+    try {
+        console.log(`[API] Regenerating image for heading: "${heading}"...`);
+        const imageUrl = await (0, imagegeneration_1.generateNewsImage)(heading, description || '');
+        if (!imageUrl) {
+            return res.status(500).json({ error: "Failed to generate image." });
+        }
+        res.json({ image_url: imageUrl });
+    }
+    catch (error) {
+        console.error("[API Error] Failed to regenerate image:", error);
+        res.status(500).json({ error: error.message || "An error occurred while generating the image." });
+    }
+});
 // Get latest persistent newsletter
 app.get('/api/latest-newsletter', async (req, res) => {
     try {
@@ -171,7 +269,7 @@ app.post('/api/send-email', async (req, res) => {
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>NewsForge AI - Newsletter Briefing</title>
+  <title>10xNewsPulse.AI - Newsletter Briefing</title>
   <style>
     body { font-family: 'Inter', Arial, sans-serif; background: #f1f5f9; padding: 32px; }
     .meta { max-width: 600px; margin: 0 auto 16px auto; background: #1e293b; color: #94a3b8; font-size: 12px; padding: 12px 20px; border-radius: 8px; }
@@ -180,7 +278,7 @@ app.post('/api/send-email', async (req, res) => {
 </head>
 <body>
   <div class="meta">
-    <b>NewsForge AI Mock Email</b><br>
+    <b>10xNewsPulse.AI Mock Email</b><br>
     <b>To:</b> ${recipientEmail}<br>
     <b>Subject:</b> ${subject || 'Your Curated Industry Briefing'}<br>
     <b>Sent at:</b> ${new Date().toLocaleString()}
@@ -202,28 +300,37 @@ app.post('/api/send-email', async (req, res) => {
             return res.status(500).json({ error: 'Failed to save mock email file.' });
         }
     }
-    // === LIVE MODE: Send via Gmail SMTP ===
+    // === LIVE MODE: Send via Resend HTTP API ===
     try {
-        const transporter = nodemailer_1.default.createTransport({
-            service: 'gmail',
-            auth: {
-                user: smtpUser,
-                pass: smtpPass,
-            },
-        });
-        await transporter.sendMail({
-            from: `"NewsForge AI" <${smtpUser}>`,
+        const resendApiKey = process.env.RESEND_API_KEY;
+        if (!resendApiKey) {
+            throw new Error("RESEND_API_KEY environment variable is not set. Please add it to your Render Environment.");
+        }
+        const resend = new resend_1.Resend(resendApiKey);
+        // Note: If you don't have a verified custom domain on Resend, 
+        // the 'from' address MUST be onboarding@resend.dev
+        const { data, error } = await resend.emails.send({
+            from: '10xNewsPulse.AI <onboarding@resend.dev>',
             to: recipientEmail,
-            subject: subject || 'Your Curated Industry Briefing — NewsForge AI',
-            html: htmlContent,
+            subject: subject || 'Your Curated Industry Briefing — 10xNewsPulse.AI',
+            text: "Please find your curated industry briefing attached as an HTML file. You can download and open it in any web browser to view the fully styled newsletter.",
+            attachments: [
+                {
+                    filename: '10xNewsPulse_Briefing.html',
+                    content: Buffer.from(htmlContent)
+                }
+            ]
         });
-        console.log(`[API] Email sent successfully to: ${recipientEmail}`);
+        if (error) {
+            throw new Error(error.message);
+        }
+        console.log(`[API] Email sent successfully to: ${recipientEmail} via Resend`);
         return res.json({ success: true, mock: false, message: `Email dispatched to ${recipientEmail}` });
     }
     catch (err) {
-        console.error('[API Error] Gmail send failed:', err);
+        console.error('[API Error] Resend email failed:', err);
         return res.status(500).json({
-            error: err.message || 'Failed to send email via Gmail. Check your SMTP credentials.'
+            error: err.message || 'Failed to send email via Resend. Check your API Key.'
         });
     }
 });

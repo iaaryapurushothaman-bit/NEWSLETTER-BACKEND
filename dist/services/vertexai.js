@@ -4,8 +4,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateNewsletter = generateNewsletter;
+exports.generateNewsletterFromFile = generateNewsletterFromFile;
 const vertexai_1 = require("@google-cloud/vertexai");
 const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
+const os_1 = __importDefault(require("os"));
 const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config();
 let vertexAIInstance = null;
@@ -13,32 +16,52 @@ let vertexAIInstance = null;
 function getVertexAI() {
     if (vertexAIInstance)
         return vertexAIInstance;
-    const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
     const configuredProjectId = process.env.GCP_PROJECT_ID || 'tenxds-agents-idp';
     const location = process.env.GCP_LOCATION || 'us-central1';
     let resolvedProjectId = configuredProjectId;
-    if (credentialsPath) {
-        const cleanPath = credentialsPath.replace(/^["']|["']$/g, ''); // strip outer quotes
-        if (fs_1.default.existsSync(cleanPath)) {
-            try {
-                const creds = JSON.parse(fs_1.default.readFileSync(cleanPath, 'utf8'));
-                if (creds.project_id) {
-                    resolvedProjectId = creds.project_id;
-                    console.log(`[Vertex AI] Found project ID in credentials file: "${resolvedProjectId}"`);
-                }
-                // Force the environment variable to contain the clean path for the GCP SDK
-                process.env.GOOGLE_APPLICATION_CREDENTIALS = cleanPath;
+    // ── Option A: Credentials provided as a raw JSON string (Render / cloud env) ──
+    const credentialsJson = process.env.GOOGLE_CREDENTIALS_JSON;
+    if (credentialsJson) {
+        try {
+            const creds = JSON.parse(credentialsJson);
+            if (creds.project_id) {
+                resolvedProjectId = creds.project_id;
+                console.log(`[Vertex AI] Using project ID from GOOGLE_CREDENTIALS_JSON: "${resolvedProjectId}"`);
             }
-            catch (err) {
-                console.error("[Vertex AI] Failed to read project ID from credentials file, falling back to env:", err);
-            }
+            // Write to a temp file so the GCP SDK can pick it up via GOOGLE_APPLICATION_CREDENTIALS
+            const tmpPath = path_1.default.join(os_1.default.tmpdir(), 'gcp-credentials.json');
+            fs_1.default.writeFileSync(tmpPath, credentialsJson, 'utf8');
+            process.env.GOOGLE_APPLICATION_CREDENTIALS = tmpPath;
+            console.log(`[Vertex AI] Wrote credentials to temp file: ${tmpPath}`);
         }
-        else {
-            console.warn(`[Vertex AI] Credentials file not found at: ${cleanPath}. Running in default authentication mode.`);
+        catch (err) {
+            console.error('[Vertex AI] Failed to parse GOOGLE_CREDENTIALS_JSON:', err);
+        }
+    }
+    else {
+        // ── Option B: Credentials provided as a file path (local dev) ──
+        const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+        if (credentialsPath) {
+            const cleanPath = credentialsPath.replace(/^["']|["']$/g, '');
+            if (fs_1.default.existsSync(cleanPath)) {
+                try {
+                    const creds = JSON.parse(fs_1.default.readFileSync(cleanPath, 'utf8'));
+                    if (creds.project_id) {
+                        resolvedProjectId = creds.project_id;
+                        console.log(`[Vertex AI] Found project ID in credentials file: "${resolvedProjectId}"`);
+                    }
+                    process.env.GOOGLE_APPLICATION_CREDENTIALS = cleanPath;
+                }
+                catch (err) {
+                    console.error('[Vertex AI] Failed to read project ID from credentials file:', err);
+                }
+            }
+            else {
+                console.warn(`[Vertex AI] Credentials file not found at: ${cleanPath}. Running in default auth mode.`);
+            }
         }
     }
     console.log(`[Vertex AI] Initializing client for project: "${resolvedProjectId}", location: "${location}"`);
-    // Initialize the Vertex AI client
     vertexAIInstance = new vertexai_1.VertexAI({
         project: resolvedProjectId,
         location: location,
@@ -140,6 +163,108 @@ Respond ONLY with a valid JSON object matching this structure:
                 if (responseText) {
                     const parsedContent = JSON.parse(responseText.trim());
                     console.log("[Vertex AI] Successfully generated newsletter content using fallback model.");
+                    return parsedContent;
+                }
+            }
+            catch (fallbackError) {
+                console.error("[Vertex AI] Fallback model also failed:", fallbackError);
+            }
+        }
+        throw error;
+    }
+}
+async function generateNewsletterFromFile(params) {
+    const { documentText, clientName, newsCount } = params;
+    const targetCount = newsCount || 5;
+    const clientText = clientName && clientName.trim() !== '' ? `specifically customized for ${clientName.trim()}` : '';
+    // Get the initialized Vertex AI instance
+    const vertexAI = getVertexAI();
+    // Load the model
+    const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    console.log(`[Vertex AI] Using model: "${modelName}" for file generation (strict mode)`);
+    const generativeModel = vertexAI.preview.getGenerativeModel({
+        model: modelName,
+        generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.1, // very low to ensure exact extraction and copying
+        }
+    });
+    const prompt = `
+You are a strict text extraction and formatting engine.
+Your task is to parse the raw text content of an uploaded document and extract its sections EXACTLY as written.
+Do NOT rewrite, paraphrase, summarize, correct grammar, translate, or generate any new content. You must copy the text word-for-word.
+
+Here is the raw text of the document:
+---
+${documentText}
+---
+
+INSTRUCTIONS:
+1. Identify the first major section/topic (e.g. related to 'Simplifying Workforce Operations' or general business topics). Extract its exact text:
+   - "editorial_title": The exact heading of this section (e.g. 'Simplifying Workforce Operations with a Unified Digital Platform').
+   - "editorial_summary": The exact paragraphs under this section, copied word-for-word.
+   
+2. Identify the wish/greeting section (e.g. 'Eid Mubarak' or other festival/celebration wishes). Extract its exact text:
+   - "wish": An object containing:
+     - "wish_title": The exact heading of this section (e.g. 'Eid Mubarak from 10xDS!').
+     - "wish_content": The exact paragraphs under this section, copied word-for-word.
+   - If no wish/holiday greeting section is present, set "wish" to null.
+
+3. Identify the subsequent sections which describe company solutions, products, or other bulletins (e.g. '10xMenu.AI' or other company solutions). For each of these sections:
+   - "heading": The exact heading of the solution/product (e.g. '10xMenu.AI: Turn Your Menu into a Revenue Engine').
+   - "description": The exact paragraphs under that heading, copied word-for-word.
+   - "source_link": Provide an empty string ("").
+
+Respond ONLY with a valid JSON object matching this structure:
+{
+  "editorial_title": "...",
+  "editorial_summary": "...",
+  "wish": {
+    "wish_title": "...",
+    "wish_content": "..."
+  },
+  "news_items": [
+    {
+      "heading": "...",
+      "description": "...",
+      "source_link": ""
+    }
+  ]
+}
+`;
+    try {
+        const result = await generativeModel.generateContent({
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        });
+        const responseText = result.response?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!responseText) {
+            throw new Error("Empty response returned from Gemini Vertex AI model.");
+        }
+        const parsedContent = JSON.parse(responseText.trim());
+        console.log("[Vertex AI] Successfully extracted newsletter content from document.");
+        return parsedContent;
+    }
+    catch (error) {
+        console.error("[Vertex AI] Failed to extract newsletter from file:", error);
+        // Fallback: if gemini-2.5-flash is not available, retry with gemini-1.5-flash
+        if (error.message && (error.message.includes('not found') || error.message.includes('permission') || error.message.includes('404'))) {
+            const fallbackModelName = 'gemini-1.5-flash';
+            console.log(`[Vertex AI] Attempting fallback to: "${fallbackModelName}"`);
+            try {
+                const fallbackModel = vertexAI.preview.getGenerativeModel({
+                    model: fallbackModelName,
+                    generationConfig: {
+                        responseMimeType: 'application/json',
+                        temperature: 0.1,
+                    }
+                });
+                const result = await fallbackModel.generateContent({
+                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                });
+                const responseText = result.response?.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (responseText) {
+                    const parsedContent = JSON.parse(responseText.trim());
+                    console.log("[Vertex AI] Successfully extracted newsletter content from document using fallback model.");
                     return parsedContent;
                 }
             }
