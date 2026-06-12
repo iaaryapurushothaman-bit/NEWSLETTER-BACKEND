@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { Resend } from 'resend';
 import mammoth from 'mammoth';
+const pdf = require('pdf-parse');
 import { fetchNews } from './services/serpapi';
 import { generateNewsletter, generateNewsletterFromFile } from './services/vertexai';
 import { generateNewsImages, generateNewsImage } from './services/imagegeneration';
@@ -13,11 +14,28 @@ dotenv.config();
 
 const PERSISTENT_FILE_PATH = path.join(__dirname, '..', 'latest_newsletter.json');
 
-const saveNewsletterState = async (inputs: any, result: any) => {
+const saveNewsletterState = async (inputs: any, result: any, briefingId?: string | null) => {
   try {
-    const data = JSON.stringify({ inputs, result }, null, 2);
+    const dataObj = { 
+      inputs, 
+      result, 
+      briefingId: briefingId || inputs.briefingId || (result && result.briefingId) || null,
+      savedAt: new Date().toISOString() 
+    };
+    const data = JSON.stringify(dataObj, null, 2);
     await fs.promises.writeFile(PERSISTENT_FILE_PATH, data, 'utf8');
     console.log(`[API] Saved latest newsletter state to ${PERSISTENT_FILE_PATH}`);
+
+    const id = briefingId || inputs.briefingId || (result && result.briefingId);
+    if (id) {
+      const archiveDir = path.join(__dirname, '..', 'archive');
+      if (!fs.existsSync(archiveDir)) {
+        await fs.promises.mkdir(archiveDir, { recursive: true });
+      }
+      const archivePath = path.join(archiveDir, `archive_${id}.json`);
+      await fs.promises.writeFile(archivePath, data, 'utf8');
+      console.log(`[API] Archived newsletter state to ${archivePath}`);
+    }
   } catch (error) {
     console.error("[API Error] Failed to save newsletter state:", error);
   }
@@ -118,10 +136,12 @@ app.post('/api/generate-newsletter', async (req: Request, res: Response) => {
       image_url: images[i] || null
     }));
 
+    const briefingId = Date.now().toString();
     const resultPayload = {
       ...newsletterContent,
       editorial_image_url: editorialImage,
-      news_items: enrichedItems
+      news_items: enrichedItems,
+      briefingId
     };
 
     // Save the generated state to disk
@@ -131,8 +151,9 @@ app.post('/api/generate-newsletter', async (req: Request, res: Response) => {
       customCategory: finalCustomCategory,
       clientName: finalClientName,
       clientLogo: clientLogo || null,
-      newsCount: finalNewsCount
-    }, resultPayload);
+      newsCount: finalNewsCount,
+      briefingId
+    }, resultPayload, briefingId);
 
     res.json(resultPayload);
   } catch (error: any) {
@@ -143,10 +164,11 @@ app.post('/api/generate-newsletter', async (req: Request, res: Response) => {
   }
 });
 
-// Generate newsletter based on uploaded Word document content
+// Generate newsletter based on uploaded Word or PDF documents
 app.post('/api/generate-from-file', async (req: Request, res: Response) => {
   const {
-    fileBuffer, // base64 string
+    fileBuffer, // base64 string (legacy fallback)
+    files, // array of { name: string, data: string, type: 'docx' | 'pdf' }
     clientName,
     clientLogo,
     newsCount
@@ -155,31 +177,54 @@ app.post('/api/generate-from-file', async (req: Request, res: Response) => {
   const finalClientName = clientName || '';
   const finalNewsCount = parseInt(newsCount || '5', 10);
 
-  if (!fileBuffer) {
+  let filesToProcess = files || [];
+  if (filesToProcess.length === 0 && fileBuffer) {
+    filesToProcess = [{
+      name: 'document.docx',
+      data: fileBuffer,
+      type: 'docx'
+    }];
+  }
+
+  if (filesToProcess.length === 0) {
     return res.status(400).json({ error: "No file content was provided." });
   }
 
   try {
-    console.log(`[API] Received generation-from-file request for Client: "${finalClientName}"`);
+    console.log(`[API] Received generation-from-file request for Client: "${finalClientName}" with ${filesToProcess.length} file(s)`);
 
-    // Decode base64 buffer
-    const buffer = Buffer.from(fileBuffer, 'base64');
+    let combinedText = '';
+    for (const file of filesToProcess) {
+      console.log(`[API] Extracting text from file: "${file.name}" (type: ${file.type})`);
+      const buffer = Buffer.from(file.data, 'base64');
+      let extractedText = '';
 
-    // Parse DOCX to text using mammoth
-    console.log(`[API] Parsing DOCX buffer...`);
-    const mammothResult = await mammoth.extractRawText({ buffer });
-    const documentText = mammothResult.value;
-    
-    if (!documentText || documentText.trim().length === 0) {
-      return res.status(400).json({ error: "Could not extract any text from the provided document. Make sure it is a valid, non-empty Word document." });
+      if (file.type === 'docx') {
+        const mammothResult = await mammoth.extractRawText({ buffer });
+        extractedText = mammothResult.value;
+      } else if (file.type === 'pdf') {
+        const pdfResult = await pdf(buffer);
+        extractedText = pdfResult.text;
+      } else {
+        console.warn(`[API] Unsupported file type: ${file.type} for file ${file.name}`);
+        continue;
+      }
+
+      if (extractedText && extractedText.trim().length > 0) {
+        combinedText += `\n\n--- Document: ${file.name} ---\n${extractedText}`;
+      }
     }
 
-    console.log(`[API] Extracted text length: ${documentText.length} characters.`);
+    if (!combinedText || combinedText.trim().length === 0) {
+      return res.status(400).json({ error: "Could not extract any text from the provided document(s). Make sure they are valid, non-empty Word or PDF files." });
+    }
+
+    console.log(`[API] Extracted combined text length: ${combinedText.length} characters.`);
 
     // Orchestrate Vertex AI to generate newsletter based on document text
     console.log(`[API] Generating newsletter content from file text...`);
     const newsletterContent = await generateNewsletterFromFile({
-      documentText,
+      documentText: combinedText,
       clientName: finalClientName,
       newsCount: finalNewsCount
     });
@@ -193,12 +238,15 @@ app.post('/api/generate-from-file', async (req: Request, res: Response) => {
       }))
     );
 
-    // Generate a hero image for the editorial summary
-    console.log(`[API] Generating hero image for editorial summary...`);
-    const editorialImage = await generateNewsImage(
-      newsletterContent.editorial_title || `Overview: ${finalClientName || 'Industry Trends'}`,
-      newsletterContent.editorial_summary.substring(0, 500)
-    );
+    // Generate a hero image for the editorial summary (only if it exists)
+    let editorialImage = null;
+    if (newsletterContent.editorial_summary) {
+      console.log(`[API] Generating hero image for editorial summary...`);
+      editorialImage = await generateNewsImage(
+        newsletterContent.editorial_title || `Overview: ${finalClientName || 'Industry Trends'}`,
+        newsletterContent.editorial_summary.substring(0, 500)
+      );
+    }
 
     // Generate an image for the wish section if it exists
     let wishImage = null;
@@ -218,6 +266,7 @@ app.post('/api/generate-from-file', async (req: Request, res: Response) => {
       image_url: images[i] || null
     }));
 
+    const briefingId = Date.now().toString();
     const resultPayload = {
       ...newsletterContent,
       editorial_image_url: editorialImage,
@@ -225,7 +274,8 @@ app.post('/api/generate-from-file', async (req: Request, res: Response) => {
         ...newsletterContent.wish,
         image_url: wishImage
       } : null,
-      news_items: enrichedItems
+      news_items: enrichedItems,
+      briefingId
     };
 
     // Save the generated state to disk
@@ -235,8 +285,9 @@ app.post('/api/generate-from-file', async (req: Request, res: Response) => {
       customCategory: '',
       clientName: finalClientName,
       clientLogo: clientLogo || null,
-      newsCount: finalNewsCount
-    }, resultPayload);
+      newsCount: finalNewsCount,
+      briefingId
+    }, resultPayload, briefingId);
 
     res.json(resultPayload);
   } catch (error: any) {
@@ -288,11 +339,90 @@ app.post('/api/save-newsletter', async (req: Request, res: Response) => {
     return res.status(400).json({ error: "Inputs and result are required fields." });
   }
   try {
-    await saveNewsletterState(inputs, result);
-    return res.json({ success: true });
+    const briefingId = inputs.briefingId || (result && result.briefingId) || Date.now().toString();
+    inputs.briefingId = briefingId;
+    if (result) {
+      result.briefingId = briefingId;
+    }
+    await saveNewsletterState(inputs, result, briefingId);
+    return res.json({ success: true, briefingId });
   } catch (error) {
     console.error("[API Error] Failed to save newsletter edits:", error);
     return res.status(500).json({ error: "Failed to persist newsletter state." });
+  }
+});
+
+// Get list of all archived newsletters
+app.get('/api/archive', async (req: Request, res: Response) => {
+  try {
+    const archiveDir = path.join(__dirname, '..', 'archive');
+    if (!fs.existsSync(archiveDir)) {
+      return res.json([]);
+    }
+    const files = await fs.promises.readdir(archiveDir);
+    const archiveList = [];
+
+    for (const file of files) {
+      if (file.startsWith('archive_') && file.endsWith('.json')) {
+        try {
+          const filePath = path.join(archiveDir, file);
+          const contentStr = await fs.promises.readFile(filePath, 'utf8');
+          const data = JSON.parse(contentStr);
+          
+          archiveList.push({
+            id: data.briefingId || data.inputs?.briefingId || file.replace('archive_', '').replace('.json', ''),
+            sector: data.inputs?.sector || '10xDS CURVE',
+            category: data.inputs?.category || '10xDS CURVE',
+            clientName: data.inputs?.clientName || 'General Audience',
+            briefingDate: data.inputs?.briefingDate || '',
+            savedAt: data.savedAt || new Date().toISOString()
+          });
+        } catch (err) {
+          console.error(`[API Error] Failed to parse archive file: ${file}`, err);
+        }
+      }
+    }
+
+    // Sort by savedAt descending (newest first)
+    archiveList.sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime());
+    return res.json(archiveList);
+  } catch (error) {
+    console.error("[API Error] Failed to read archive list:", error);
+    return res.status(500).json({ error: "Failed to load archive history." });
+  }
+});
+
+// Load a single archived newsletter state
+app.get('/api/archive/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    const filePath = path.join(__dirname, '..', 'archive', `archive_${id}.json`);
+    if (fs.existsSync(filePath)) {
+      const dataStr = await fs.promises.readFile(filePath, 'utf8');
+      const data = JSON.parse(dataStr);
+      return res.json(data);
+    }
+    return res.status(404).json({ error: "Archived briefing not found." });
+  } catch (error) {
+    console.error("[API Error] Failed to read archived briefing:", error);
+    return res.status(500).json({ error: "Failed to load archived briefing state." });
+  }
+});
+
+// Delete a single archived newsletter state
+app.delete('/api/archive/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    const filePath = path.join(__dirname, '..', 'archive', `archive_${id}.json`);
+    if (fs.existsSync(filePath)) {
+      await fs.promises.unlink(filePath);
+      console.log(`[API] Deleted archived briefing file: ${filePath}`);
+      return res.json({ success: true });
+    }
+    return res.status(404).json({ error: "Archived briefing not found." });
+  } catch (error) {
+    console.error("[API Error] Failed to delete archived briefing:", error);
+    return res.status(500).json({ error: "Failed to delete archived briefing state." });
   }
 });
 

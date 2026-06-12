@@ -5,3 +5,4 @@ dist/
 .env
 latest_newsletter.json
 sent_emails/
+archive/

@@ -228,40 +228,38 @@ export async function generateNewsletterFromFile(params: {
     model: modelName,
     generationConfig: {
       responseMimeType: 'application/json',
-      temperature: 0.1, // very low to ensure exact extraction and copying
+      temperature: 0.35, // slightly higher temperature to allow creative rephrasing
     }
   });
 
   const prompt = `
-You are a strict text extraction and formatting engine.
-Your task is to parse the raw text content of an uploaded document and extract its sections EXACTLY as written.
-Do NOT rewrite, paraphrase, summarize, correct grammar, translate, or generate any new content. You must copy the text word-for-word.
+You are a professional business writer and formatting engine.
+Your task is to parse the raw text content of the uploaded document(s), analyze the various solutions, products, and greetings, and **rephrase, summarize, and polish them into a highly professional, cohesive corporate newsletter format**. 
+Improve readability, polish the tone into a sophisticated executive style, and structure the solutions directly as individual bulletins/news items. Do NOT generate any editorial overview column, editorial summary, or editorial title.
 
-Here is the raw text of the document:
+**CRITICAL GUIDELINES:**
+1. **Generalize Content (No Client Names):** If the uploaded documents mention any specific client names, customer implementations, or target customer projects, do NOT include those client names or client-specific details in the generated newsletter headlines or descriptions. Rewrite and generalize the content so that it describes the solution as a general offering of the company (using '10xDS' or the product brand) rather than a client-specific implementation.
+2. **Word Count Requirement:** Each solution "description" MUST be detailed and have a word count strictly between **100 and 150 words**. Be thorough, describing the features, benefits, and business value of the solution in detail to ensure the word count requirement is met.
+
+Here is the raw text of the document(s):
 ---
 ${documentText}
 ---
 
 INSTRUCTIONS:
-1. Identify the first major section/topic (e.g. related to 'Simplifying Workforce Operations' or general business topics). Extract its exact text:
-   - "editorial_title": The exact heading of this section (e.g. 'Simplifying Workforce Operations with a Unified Digital Platform').
-   - "editorial_summary": The exact paragraphs under this section, copied word-for-word.
-   
-2. Identify the wish/greeting section (e.g. 'Eid Mubarak' or other festival/celebration wishes). Extract its exact text:
+1. Identify the wish/greeting section (e.g. 'Eid Mubarak' or other festival/celebration wishes) if one exists in the text:
    - "wish": An object containing:
-     - "wish_title": The exact heading of this section (e.g. 'Eid Mubarak from 10xDS!').
-     - "wish_content": The exact paragraphs under this section, copied word-for-word.
+     - "wish_title": A polished greeting heading (e.g. 'Warm Holiday Greetings from 10xDS!').
+     - "wish_content": The greeting message, rephrased into a warm, professional corporate tone.
    - If no wish/holiday greeting section is present, set "wish" to null.
 
-3. Identify the subsequent sections which describe company solutions, products, or other bulletins (e.g. '10xMenu.AI' or other company solutions). For each of these sections:
-   - "heading": The exact heading of the solution/product (e.g. '10xMenu.AI: Turn Your Menu into a Revenue Engine').
-   - "description": The exact paragraphs under that heading, copied word-for-word.
+2. Identify the sections which describe company solutions, products, services, or other bulletins. For each of these sections:
+   - "heading": A polished, punchy business headline for the solution/product (e.g. '10xMenu.AI: Turn Your Menu into a Revenue Engine').
+   - "description": A detailed professional summary outlining the solution, its key capabilities, and strategic benefits. The description MUST be between 100 and 150 words.
    - "source_link": Provide an empty string ("").
 
 Respond ONLY with a valid JSON object matching this structure:
 {
-  "editorial_title": "...",
-  "editorial_summary": "...",
   "wish": {
     "wish_title": "...",
     "wish_content": "..."
